@@ -1,292 +1,263 @@
-import 'package:bloc/bloc.dart';
+import 'dart:async';
 import 'dart:math';
+
+import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
+import 'package:match2048/models/game_mode.dart';
 
 part 'game_event.dart';
 part 'game_state.dart';
 
 class GameBloc extends Bloc<GameEvent, GameState> {
-  GameBloc() : super(GameInitial()) {
-    on<SwipeUpEvent>((event, emit) async => await _handleSwipe(Direction.up, emit));
-    on<SwipeDownEvent>((event, emit) async => await _handleSwipe(Direction.down, emit));
-    on<SwipeLeftEvent>((event, emit) async => await _handleSwipe(Direction.left, emit));
-    on<SwipeRightEvent>((event, emit) async => await _handleSwipe(Direction.right, emit));
+  GameMode gameMode;
+  Timer? _gameTimer;
+  static const int timeAttackDuration = 180; // 3 minutes
+  static const int moveLimitCount = 50;
+  int _tileIdCounter = 0;
+
+  GameBloc({required this.gameMode}) : super(GameInitial()) {
+    on<SwipeUpEvent>(
+      (event, emit) async => await _handleSwipe(Direction.up, emit),
+    );
+    on<SwipeDownEvent>(
+      (event, emit) async => await _handleSwipe(Direction.down, emit),
+    );
+    on<SwipeLeftEvent>(
+      (event, emit) async => await _handleSwipe(Direction.left, emit),
+    );
+    on<SwipeRightEvent>(
+      (event, emit) async => await _handleSwipe(Direction.right, emit),
+    );
     on<ResetGameEvent>((event, emit) => _resetGame(emit));
-    on<GameStartEvent>((event, emit) => _startGame(emit));
+    on<GameStartEvent>((event, emit) => _startGame(event, emit));
+    on<TimerTickEvent>((event, emit) => _handleTimerTick(emit));
   }
 
-  static List<List<int>> _initGrid() {
-    var grid = List.generate(4, (_) => List.generate(4, (_) => 0));
-    _addRandomTile(grid);
-    _addRandomTile(grid);
-    return grid;
+  void _startTimer() {
+    if (gameMode == GameMode.timeAttack) {
+      _gameTimer?.cancel();
+      _gameTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => add(TimerTickEvent()),
+      );
+    }
   }
 
-  static bool _isGridChanged(List<List<int>> oldGrid, List<List<int>> newGrid) {
-    for (int i = 0; i < 4; i++) {
-      for (int j = 0; j < 4; j++) {
-        if (oldGrid[i][j] != newGrid[i][j]) {
-          return true; // Grid has changed
+  void _handleTimerTick(Emitter<GameState> emit) {
+    if (state is GameRun) {
+      final currentState = state as GameRun;
+      final newTimeLeft = (currentState.timeLeft ?? 0) - 1;
+
+      if (newTimeLeft <= 0) {
+        _gameTimer?.cancel();
+        emit(GameOverState(score: currentState.score, grid: currentState.grid));
+      } else {
+        emit(currentState.copyWith(timeLeft: newTimeLeft));
+      }
+    }
+  }
+
+  void _checkGameModeConditions(GameRun currentState, Emitter<GameState> emit) {
+    switch (gameMode) {
+      case GameMode.timeAttack:
+        if (currentState.timeLeft! <= 0) {
+          emit(GameOverState(
+              score: currentState.score, grid: currentState.grid));
         }
-      }
+        break;
+      case GameMode.moveLimit:
+        if (currentState.movesLeft! <= 0) {
+          emit(GameOverState(
+              score: currentState.score, grid: currentState.grid));
+        }
+        break;
+      default:
+        break;
     }
-    return false; // No change
   }
 
-  static void _addRandomTile(List<List<int>> grid) {
-    List<Point> emptyCells = [];
-    for (int i = 0; i < 4; i++) {
-      for (int j = 0; j < 4; j++) {
-        if (grid[i][j] == 0) emptyCells.add(Point(i, j));
-      }
-    }
-    if (emptyCells.isNotEmpty) {
-      var randomCell = emptyCells[Random().nextInt(emptyCells.length)];
-      grid[randomCell.x.toInt()][randomCell.y.toInt()] = 2;
-    }
+  void _startGame(GameStartEvent event, Emitter<GameState> emit) {
+    gameMode = event.gameMode;
+    _tileIdCounter = 0;
+    var newTiles = <TileData>[];
+    _addRandomTile(newTiles);
+    _addRandomTile(newTiles);
+
+    emit(
+      GameRun(
+        grid: _gridFromTiles(newTiles),
+        tiles: newTiles,
+        score: 0,
+        previousGesture: -1,
+        gameMode: gameMode,
+        timeLeft: gameMode == GameMode.timeAttack ? timeAttackDuration : null,
+        movesLeft: gameMode == GameMode.moveLimit ? moveLimitCount : null,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    _startTimer();
   }
 
   Future<void> _handleSwipe(Direction direction, Emitter<GameState> emit) async {
     if (state is! GameRun) return;
-    List<List<int>> newGrid = _copyGrid((state as GameRun).grid);
-    int score = (state as GameRun).score;
-    bool hasMerged = false;
-    int newGesture = 0;
-    bool isSameAsPrevious = false;
+    final currentState = state as GameRun;
 
-    // Before making a move, check if game over conditions are met
-    if (_isGameOver(newGrid)) {
-      emit(GameOverState(score: score, grid: newGrid)); // Emit GameOverState
-      return; // Stop the game
+    if (gameMode == GameMode.moveLimit && currentState.movesLeft! <= 0) {
+      return;
+    }
+    
+    var tiles = currentState.tiles.map((t) => t.copyWith(isNew: false, isMerging: false)).toList();
+    var originalTiles = tiles.map((t) => t.copyWith()).toList();
+    var score = 0;
+
+    bool isVertical = direction == Direction.up || direction == Direction.down;
+    bool isReversed = direction == Direction.down || direction == Direction.right;
+
+    for (int i = 0; i < 4; i++) {
+      var line = tiles.where((t) => isVertical ? t.col == i : t.row == i).toList();
+      line.sort((a, b) => (isVertical ? a.row.compareTo(b.row) : a.col.compareTo(b.col)));
+      if (isReversed) {
+        line = line.reversed.toList();
+      }
+
+      var newLine = <TileData>[];
+      for(var tile in line) {
+        if(newLine.isEmpty) {
+          newLine.add(tile);
+        } else {
+          var last = newLine.last;
+          if(last.value == tile.value && !last.isMerging) {
+            var merged = last.copyWith(value: last.value * 2, isMerging: true);
+            score += merged.value;
+            newLine[newLine.length - 1] = merged;
+            tiles.removeWhere((t) => t.id == tile.id);
+          } else {
+            newLine.add(tile);
+          }
+        }
+      }
+
+      for(int j=0; j<newLine.length; j++) {
+        var tile = newLine[j];
+        var newRow = isVertical ? (isReversed ? 3 - j : j) : i;
+        var newCol = isVertical ? i : (isReversed ? 3 - j : j);
+        var index = tiles.indexWhere((t) => t.id == tile.id);
+        if(index != -1) {
+          tiles[index] = tile.copyWith(previousRow: tile.row, previousCol: tile.col, row: newRow, col: newCol);
+        }
+      }
     }
 
-    switch (direction) {
-      case Direction.up:
-        Map<String, dynamic> values = _moveUp(newGrid, emit, hasMerged);
-        newGrid = values['grid'];
-        score = values['score'];
-        hasMerged = values['hasMerged'];
-        isSameAsPrevious = !values['isSameAsPrevious'];
-        newGesture = 0;
-        break;
-      case Direction.down:
-        Map<String, dynamic> values = _moveDown(newGrid, emit, hasMerged);
-        newGrid = values['grid'];
-        score = values['score'];
-        hasMerged = values['hasMerged'];
-        newGesture = 1;
-        isSameAsPrevious = !values['isSameAsPrevious'];
-        break;
-      case Direction.left:
-        Map<String, dynamic> values = _moveLeft(newGrid, emit, hasMerged);
-        newGrid = values['grid'];
-        score = values['score'];
-        hasMerged = values['hasMerged'];
-        newGesture = 2;
-        isSameAsPrevious = !values['isSameAsPrevious'];
-        break;
-      case Direction.right:
-        Map<String, dynamic> values = _moveRight(newGrid, emit, hasMerged);
-        newGrid = values['grid'];
-        score = values['score'];
-        hasMerged = values['hasMerged'];
-        newGesture = 3;
-        isSameAsPrevious = !values['isSameAsPrevious'];
-        break;
-    }
-    if (!hasMerged) {
-      _addRandomTile(newGrid);
-      emit(GameRun(grid: newGrid, score: (state as GameRun).score + score, previousGesture: newGesture));
+    bool moved = false;
+    if (tiles.length != originalTiles.length) {
+      moved = true;
     } else {
-      emit(GameRun(grid: newGrid, score: (state as GameRun).score + score, previousGesture: newGesture));
-    }
-  }
-
-  // Move Left with score accumulation
-  Map<String, dynamic> _moveLeft(List<List<int>> grid, Emitter<GameState> emit, bool hasMerged) {
-    int score = 0;
-    List<List<int>> previousGrid = grid;
-
-    for (int row = 0; row < 4; row++) {
-      List<int> rowList = [];
-      // Collect all non-zero values in the row
-      for (int col = 0; col < 4; col++) {
-        if (grid[row][col] != 0) rowList.add(grid[row][col]);
-      }
-
-      // Merge tiles in the row
-      for (int i = 0; i < rowList.length - 1; i++) {
-        if (rowList[i] == rowList[i + 1]) {
-          rowList[i] *= 2;
-          score += rowList[i];  // Add merged value to the score
-          rowList.removeAt(i + 1); // Remove merged tile
-          rowList.add(0); // Add 0 to maintain length
-          hasMerged = true; // Set merge flag to true
+      for (var tile in tiles) {
+        var original = originalTiles.firstWhere((ot) => ot.id == tile.id);
+        if (original.row != tile.row || original.col != tile.col) {
+          moved = true;
+          break;
         }
       }
-
-      // Place the updated row back into the grid
-      for (int i = 0; i < 4; i++) {
-        grid[row][i] = i < rowList.length ? rowList[i] : 0;
-      }
     }
 
-    return {
-      'grid': grid,
-      'hasMerged': hasMerged,
-      'score': score,
-      'isSameAsPrevious': _isGridChanged(previousGrid, grid),
-    };
-  }
+    print('GameBloc: Swipe ${direction.name}, Moved: $moved');
+    if (moved) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      _addRandomTile(tiles);
 
-  // Move Right with score accumulation
-  Map<String, Object> _moveRight(List<List<int>> grid, Emitter<GameState> emit, bool hasMerged) {
-    int score = 0;
-    List<List<int>> previousGrid = grid;
-
-    for (int row = 0; row < 4; row++) {
-      List<int> rowList = [];
-
-      // Step 1: Collect all non-zero values in the row (starting from right to left)
-      for (int col = 3; col >= 0; col--) {
-        if (grid[row][col] != 0) rowList.add(grid[row][col]);
+      int? newMovesLeft = currentState.movesLeft;
+      if (gameMode == GameMode.moveLimit) {
+        newMovesLeft = currentState.movesLeft! - 1;
       }
 
-      // Step 2: Merge tiles in the row (from right to left)
-      for (int i = 0; i < rowList.length - 1; i++) {
-        if (rowList[i] == rowList[i + 1]) {
-          rowList[i] *= 2; // Merge tiles by doubling the value
-          score += rowList[i]; // Add merged value to the score
-          rowList.removeAt(i + 1); // Remove the second tile
-          rowList.add(0); // Add 0 at the end to maintain length
-          hasMerged = true; // Set merge flag to true
+      final finalState = GameRun(
+        grid: _gridFromTiles(tiles),
+        tiles: tiles,
+        score: currentState.score + score,
+        previousGesture: direction.index,
+        gameMode: gameMode,
+        timeLeft: currentState.timeLeft,
+        movesLeft: newMovesLeft,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      );
+      emit(finalState);
+
+      if (_isGameOver(finalState.tiles)) {
+        emit(GameOverState(score: finalState.score, grid: finalState.grid));
+        return;
+      }
+
+      _checkGameModeConditions(finalState, emit);
+    }
+  }
+
+  void _addRandomTile(List<TileData> tiles) {
+    var emptyCells = <Point<int>>[];
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        if (tiles.every((t) => t.row != r || t.col != c)) {
+          emptyCells.add(Point(r, c));
         }
       }
-
-      // Step 3: Fill the row from right to left to place the updated tiles
-      for (int i = 0; i < 4; i++) {
-        grid[row][3 - i] = i < rowList.length ? rowList[i] : 0;
-      }
     }
 
-    // Step 4: Emit updated state with merged score
-    return {
-      'grid': grid,
-      'hasMerged': hasMerged,
-      'score': score,
-      'isSameAsPrevious': _isGridChanged(previousGrid, grid),
-    };
-  }
-
-  // Move Up with score accumulation
-  Map<String, dynamic> _moveUp(List<List<int>> grid, Emitter<GameState> emit, bool hasMerged) {
-    int score = 0;
-    List<List<int>> previousGrid = grid;
-
-    for (int col = 0; col < 4; col++) {
-      List<int> column = [];
-
-      // Collect all non-zero values in the column
-      for (int row = 0; row < 4; row++) {
-        if (grid[row][col] != 0) column.add(grid[row][col]);
-      }
-
-      // Merge tiles in the column (from top to bottom)
-      for (int i = 0; i < column.length - 1; i++) {
-        if (column[i] == column[i + 1]) {
-          column[i] *= 2; // Merge tiles by doubling the value
-          score += column[i]; // Add merged value to score
-          column.removeAt(i + 1); // Remove the second tile
-          column.add(0); // Add 0 at the end to maintain the same length
-          hasMerged = true; // Set merge flag to true
-        }
-      }
-
-      // Fill the column with updated values from top to bottom
-      for (int i = 0; i < 4; i++) {
-        grid[i][col] = i < column.length ? column[i] : 0;
-      }
+    if (emptyCells.isNotEmpty) {
+      var cell = emptyCells[Random().nextInt(emptyCells.length)];
+      tiles.add(
+        TileData(
+          id: 'tile-${_tileIdCounter++}',
+          row: cell.x,
+          col: cell.y,
+          previousRow: cell.x,
+          previousCol: cell.y,
+          value: Random().nextInt(10) == 0 ? 4 : 2,
+          isNew: true,
+        ),
+      );
     }
-
-    return {
-      'grid': grid,
-      'hasMerged': hasMerged,
-      'score': score,
-      'isSameAsPrevious': _isGridChanged(previousGrid, grid),
-    };
   }
 
-  // Move Down with score accumulation
-  Map<String, Object> _moveDown(List<List<int>> grid, Emitter<GameState> emit, bool hasMerged) {
-    int score = 0;
-    List<List<int>> previousGrid = grid;
+  bool _isGameOver(List<TileData> tiles) {
+    if (tiles.length < 16) return false;
 
-    for (int col = 0; col < 4; col++) {
-      List<int> column = [];
-
-      // Collect all non-zero values in the column (from bottom to top)
-      for (int row = 3; row >= 0; row--) {
-        if (grid[row][col] != 0) column.add(grid[row][col]);
-      }
-
-      // Merge tiles in the column (from bottom to top)
-      for (int i = 0; i < column.length - 1; i++) {
-        if (column[i] == column[i + 1]) {
-          column[i] *= 2; // Merge tiles by doubling the value
-          score += column[i]; // Add merged value to score
-          column.removeAt(i + 1); // Remove the second tile
-          column.add(0); // Add 0 at the start to maintain the length
-          hasMerged = true; // Set merge flag to true
-        }
-      }
-
-      // Fill the column from bottom to top to place the updated tiles
-      for (int i = 0; i < 4; i++) {
-        grid[3 - i][col] = i < column.length ? column[i] : 0; // Fill from bottom up
-      }
-    }
-
-    // Emit updated state with merged score
-    return {
-      'grid': grid,
-      'hasMerged': hasMerged,
-      'score': score,
-      'isSameAsPrevious': _isGridChanged(previousGrid, grid),
-    };
-  }
-
-  //Game Over
-  bool _isGameOver(List<List<int>> grid) {
-    // 1. Check if there's no empty space (no 0s)
-    bool isFull = grid.every((row) => row.every((tile) => tile != 0));
-
-    // 2. Check if no valid moves (no adjacent matching tiles)
-    bool noMovesLeft = true;
     for (int i = 0; i < 4; i++) {
       for (int j = 0; j < 4; j++) {
+        final tile = tiles.firstWhere((t) => t.row == i && t.col == j, orElse: () => TileData(id: '', value: -1, row: -1, col: -1, previousRow: -1, previousCol: -1));
+        if (tile.value == -1) continue; // Should not happen in a full grid
+
+        // Check for adjacent tiles with the same value
         // Check right
-        if (j < 3 && grid[i][j] == grid[i][j + 1]) return false;
+        if (j < 3) {
+          final rightTile = tiles.firstWhere((t) => t.row == i && t.col == j + 1, orElse: () => TileData(id: '', value: -1, row: -1, col: -1, previousRow: -1, previousCol: -1));
+          if (rightTile.value != -1 && rightTile.value == tile.value) return false;
+        }
         // Check down
-        if (i < 3 && grid[i][j] == grid[i + 1][j]) return false;
+        if (i < 3) {
+          final downTile = tiles.firstWhere((t) => t.row == i + 1 && t.col == j, orElse: () => TileData(id: '', value: -1, row: -1, col: -1, previousRow: -1, previousCol: -1));
+          if (downTile.value != -1 && downTile.value == tile.value) return false;
+        }
       }
     }
-
-    return isFull && noMovesLeft; // Game is over if full and no moves left
+    return true;
   }
 
-
-  // Reset Game
   void _resetGame(Emitter<GameState> emit) {
     emit(GameInitial());
   }
 
-  // Start Game
-  void _startGame(Emitter<GameState> emit) {
-    emit(GameRun(grid: _initGrid(), score: 0, previousGesture: -1));
+  List<List<int>> _gridFromTiles(List<TileData> tiles) {
+    var grid = List.generate(4, (_) => List.generate(4, (_) => 0));
+    for (var tile in tiles) {
+      grid[tile.row][tile.col] = tile.value;
+    }
+    return grid;
   }
 
-  List<List<int>> _copyGrid(List<List<int>> grid) {
-    return List.generate(4, (i) => List.from(grid[i]));
+  @override
+  Future<void> close() {
+    _gameTimer?.cancel();
+    return super.close();
   }
 }
 

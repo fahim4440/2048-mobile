@@ -26,6 +26,15 @@ class ResetGameEvent extends GameEvent {
 }
 
 class GameStartEvent extends GameEvent {
+  final GameMode gameMode;
+
+  const GameStartEvent({required this.gameMode});
+
+  @override
+  List<Object?> get props => [gameMode];
+}
+
+class TimerTickEvent extends GameEvent {
   @override
   List<Object?> get props => [];
 }

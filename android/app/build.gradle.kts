@@ -43,18 +43,20 @@ android {
 
     signingConfigs {
         create("release") {
-            keyAlias = keystoreProperties.getProperty("keyAlias")  // Correct access using getProperty
-            keyPassword = keystoreProperties.getProperty("keyPassword")
+            keyAlias = keystoreProperties.getProperty("keyAlias") as String  // Correct access using getProperty
+            keyPassword = keystoreProperties.getProperty("keyPassword") as String
             storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }  // Null-safe check and file conversion
-            storePassword = keystoreProperties.getProperty("storePassword")
+            storePassword = keystoreProperties.getProperty("storePassword") as String
         }
     }
 
     buildTypes {
-        getByName("release") {
+        release {
             isMinifyEnabled = true   // Enable minification if needed (use ProGuard or R8)
             isShrinkResources = true // Shrinks resources, set to false if you don't need it
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

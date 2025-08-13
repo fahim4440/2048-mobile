@@ -1,15 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:match2048/screens/game_screen.dart';
-import 'package:match2048/widgets/banner_ad.dart';
-import 'package:match2048/widgets/interstitial_ad.dart';
-import 'blocs/game_bloc.dart';
+import 'package:match2048/screens/menu_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  MobileAds.instance.initialize();
-  runApp(MyApp());
+  if (!kIsWeb) {
+    // MobileAds.instance.initialize();
+  }
+  runApp(const MyApp());
 }
 
 class MyApp extends StatefulWidget {
@@ -20,18 +18,20 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  final InterstitialAdManager _interstitialAdManager = InterstitialAdManager();
+  // final InterstitialAdManager _interstitialAdManager = InterstitialAdManager();
 
-  @override
-  void initState() {
-    super.initState();
-    _interstitialAdManager.loadInterstitialAd();
-  }
+  // @override
+  // void initState() {
+  //   super.initState();
+  //   if (!kIsWeb) {
+  //     _interstitialAdManager.loadInterstitialAd();
+  //   }
+  // }
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       home: Scaffold(
-        bottomNavigationBar: BannerAdWidget(),
+        // bottomNavigationBar: kIsWeb ? const SizedBox() : BannerAdWidget(),
         body: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -40,20 +40,18 @@ class _MyAppState extends State<MyApp> {
               end: Alignment.bottomRight, // End point
             ),
           ),
-          child: Column(
-            children: [
-              SizedBox(
-                height: kToolbarHeight,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: 500),
+              child: Column(
+                children: [
+                  SizedBox(
+                    height: kToolbarHeight,
+                  ),
+                  Expanded(child: MenuScreen())
+                ],
               ),
-              Text(
-                '2048 Game',
-                style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold, color: Colors.white),
-              ),
-              BlocProvider(
-                create: (context) => GameBloc(),
-                child: GameScreen(interstitialAdManager: _interstitialAdManager,),
-              ),
-            ],
+            ),
           ),
         ),
       ),

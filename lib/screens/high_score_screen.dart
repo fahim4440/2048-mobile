@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:match2048/widgets/banner_ad.dart';
 
 import '../services/high_score_manager.dart';
 
@@ -10,7 +9,7 @@ class HighScoreScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     HighScoreManager highScoreManager = HighScoreManager();
     return Scaffold(
-      bottomNavigationBar: BannerAdWidget(),
+      // bottomNavigationBar: BannerAdWidget(),
       body: Container(
         decoration: BoxDecoration(
           gradient: RadialGradient(
